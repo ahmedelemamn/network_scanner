@@ -25,7 +25,7 @@ Examples:
   python network_scan.py 10.0.0.1 10.0.0.254 -w 50 -v
   ```
 
-The script outputs a CSV sheet where each row represents an IP and columns indicate whether ICMP responded and whether each TCP port accepted a connection. Logging reports progress per host, and `-v` enables debug details for each probe.
+The script outputs a CSV sheet where each row represents an IP and columns indicate whether ICMP responded and whether each TCP port accepted a connection. Logging reports progress per host, and `-v` enables debug details for each probe. Ping flags are chosen automatically for Windows vs. Linux/macOS so ICMP reachability is reported consistently across platforms.
 
 ## Suggestions
 - Run the script from a machine on the target network for reliable reachability tests.

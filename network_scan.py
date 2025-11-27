@@ -3,6 +3,7 @@ import concurrent.futures
 import csv
 import ipaddress
 import logging
+import platform
 import socket
 import subprocess
 from typing import Iterable, List, Dict
@@ -63,7 +64,21 @@ def ip_range(start_ip: str, end_ip: str) -> Iterable[str]:
 
 
 def ping(ip: str, timeout: float) -> bool:
-    cmd = ["ping", "-c", "1", "-W", str(int(max(timeout, 0.1))), ip]
+    """Ping an IP address with platform-aware flags.
+
+    Windows uses different flags and expects timeout in milliseconds, while
+    Linux/macOS use ``-c``/``-W`` with whole-second timeouts. This keeps the
+    interface consistent across platforms so ICMP results are reliable for
+    Windows users.
+    """
+
+    if platform.system().lower().startswith("win"):
+        # Windows: -n (count), -w (timeout in ms)
+        timeout_ms = max(int(timeout * 1000), 1)
+        cmd = ["ping", "-n", "1", "-w", str(timeout_ms), ip]
+    else:
+        # Unix-like: -c (count), -W (timeout in seconds)
+        cmd = ["ping", "-c", "1", "-W", str(int(max(timeout, 1))), ip]
     logging.debug("Pinging %s with timeout %ss", ip, timeout)
     proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     reachable = proc.returncode == 0
