@@ -7,7 +7,7 @@ import socket
 import subprocess
 from typing import Iterable, List, Dict
 
-DEFAULT_PORTS = [80, 443, 9443]
+DEFAULT_PORTS = [22, 23, 80, 443, 9443]
 
 
 def parse_args() -> argparse.Namespace:

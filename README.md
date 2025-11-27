@@ -12,7 +12,7 @@ python network_scan.py <start_ip> <end_ip> [-p PORT [PORT ...]] [-o OUTPUT] [-t 
 ```
 
 Examples:
-- Scan a small range with default ports 80, 443, and 9443:
+- Scan a small range with default ports 22 (SSH), 23 (Telnet), 80, 443, and 9443:
   ```
   python network_scan.py 192.168.1.1 192.168.1.20
   ```
