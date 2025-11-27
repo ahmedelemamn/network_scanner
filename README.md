@@ -8,7 +8,7 @@ Simple Python script to scan a range of IP addresses using ICMP ping and TCP por
 
 ## Usage
 ```
-python network_scan.py <start_ip> <end_ip> [-p PORT [PORT ...]] [-o OUTPUT] [-t TIMEOUT]
+python network_scan.py <start_ip> <end_ip> [-p PORT [PORT ...]] [-o OUTPUT] [-t TIMEOUT] [-w WORKERS] [-v]
 ```
 
 Examples:
@@ -20,8 +20,12 @@ Examples:
   ```
   python network_scan.py 10.0.0.1 10.0.0.50 -p 80 443 8080 -o my_scan.csv
   ```
+- Run with more workers and verbose logging for faster, chatty scanning:
+  ```
+  python network_scan.py 10.0.0.1 10.0.0.254 -w 50 -v
+  ```
 
-The script outputs a CSV sheet where each row represents an IP and columns indicate whether ICMP responded and whether each TCP port accepted a connection.
+The script outputs a CSV sheet where each row represents an IP and columns indicate whether ICMP responded and whether each TCP port accepted a connection. Logging reports progress per host, and `-v` enables debug details for each probe.
 
 ## Suggestions
 - Run the script from a machine on the target network for reliable reachability tests.

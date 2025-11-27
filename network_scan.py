@@ -1,6 +1,8 @@
 import argparse
+import concurrent.futures
 import csv
 import ipaddress
+import logging
 import socket
 import subprocess
 from typing import Iterable, List, Dict
@@ -33,6 +35,19 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="Timeout in seconds for ping and TCP connections",
     )
+    parser.add_argument(
+        "-w",
+        "--workers",
+        type=int,
+        default=20,
+        help="Number of concurrent workers for scanning hosts",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose debug logging",
+    )
     return parser.parse_args()
 
 
@@ -49,8 +64,11 @@ def ip_range(start_ip: str, end_ip: str) -> Iterable[str]:
 
 def ping(ip: str, timeout: float) -> bool:
     cmd = ["ping", "-c", "1", "-W", str(int(max(timeout, 0.1))), ip]
+    logging.debug("Pinging %s with timeout %ss", ip, timeout)
     proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return proc.returncode == 0
+    reachable = proc.returncode == 0
+    logging.debug("Ping %s: %s", ip, "reachable" if reachable else "unreachable")
+    return reachable
 
 
 def scan_port(ip: str, port: int, timeout: float) -> bool:
@@ -58,15 +76,24 @@ def scan_port(ip: str, port: int, timeout: float) -> bool:
         sock.settimeout(timeout)
         try:
             sock.connect((ip, port))
+            logging.debug("Port %s:%s open", ip, port)
             return True
         except (socket.timeout, ConnectionRefusedError, OSError):
+            logging.debug("Port %s:%s closed or filtered", ip, port)
             return False
 
 
 def scan_host(ip: str, ports: List[int], timeout: float) -> Dict[str, bool]:
+    logging.info("Scanning host %s", ip)
     results = {"icmp": ping(ip, timeout)}
     for port in ports:
         results[f"tcp_{port}"] = scan_port(ip, port, timeout)
+    logging.info(
+        "Finished %s | ICMP: %s | TCP: %s",
+        ip,
+        "reachable" if results["icmp"] else "no reply",
+        ", ".join(f"{port}:{'open' if results[f'tcp_{port}'] else 'closed'}" for port in ports),
+    )
     return results
 
 
@@ -81,15 +108,31 @@ def write_results(rows: List[Dict[str, str]], ports: List[int], output: str) -> 
 
 def main() -> None:
     args = parse_args()
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
     ports = sorted(set(args.ports))
 
     results: List[Dict[str, str]] = []
-    for ip in ip_range(args.start_ip, args.end_ip):
-        host_result = scan_host(ip, ports, args.timeout)
-        results.append({"ip": ip, **host_result})
+    all_ips = list(ip_range(args.start_ip, args.end_ip))
+    logging.info(
+        "Starting scan of %d host(s) across ports %s with %d worker(s)",
+        len(all_ips),
+        ", ".join(str(p) for p in ports),
+        args.workers,
+    )
 
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+        future_to_ip = {executor.submit(scan_host, ip, ports, args.timeout): ip for ip in all_ips}
+        for future in concurrent.futures.as_completed(future_to_ip):
+            ip = future_to_ip[future]
+            host_result = future.result()
+            results.append({"ip": ip, **host_result})
+
+    results.sort(key=lambda row: ipaddress.ip_address(row["ip"]))
     write_results(results, ports, args.output)
-    print(f"Scan complete. Results saved to {args.output}")
+    logging.info("Scan complete. Results saved to %s", args.output)
 
 
 if __name__ == "__main__":
