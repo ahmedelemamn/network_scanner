@@ -1,0 +1,11 @@
+[
+  {
+    "ip": "127.0.0.1",
+    "hostname": "localhost",
+    "icmp": true,
+    "tcp": {
+      "80": false
+    },
+    "banners": {}
+  }
+]
