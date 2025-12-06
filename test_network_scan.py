@@ -77,7 +77,7 @@ class TestNetworkScan(unittest.TestCase):
 
     def test_classify_esxi(self):
         tcp = {443: True, 80: True}
-        banners = {80: "VMware ESXi server", 443: "HTTP Title: VMware ESXi"}
+        banners = {80: "HTTP 302 | Location: https://1.2.3.4/ui", 443: "HTTP 200 | Title: VMware ESXi"}
         self.assertEqual(network_scan.classify_device("1.2.3.4", tcp, banners), "VMware ESXi")
     
     def test_classify_vcenter(self):
@@ -86,12 +86,12 @@ class TestNetworkScan(unittest.TestCase):
         self.assertEqual(network_scan.classify_device("1.2.3.4", tcp, banners), "VMware vCenter (Likely)")
         
         tcp = {443: True}
-        banners = {443: "HTTP Title: vSphere Client"}
+        banners = {443: "HTTP 200 | Title: vSphere Client"}
         self.assertEqual(network_scan.classify_device("1.2.3.4", tcp, banners), "VMware vCenter")
 
     def test_classify_cimc(self):
         tcp = {443: True}
-        banners = {443: "HTTP Title: Cisco Integrated Management Controller"}
+        banners = {443: "HTTP 200 | Title: Cisco Integrated Management Controller"}
         self.assertEqual(network_scan.classify_device("1.2.3.4", tcp, banners), "Cisco CIMC")
 
     def test_classify_nexus(self):
@@ -104,7 +104,7 @@ class TestNetworkScan(unittest.TestCase):
 
     def test_classify_unknown(self):
         tcp = {80: True}
-        banners = {80: "Apache"}
+        banners = {80: "HTTP 200 | Server: Apache"}
         self.assertEqual(network_scan.classify_device("1.2.3.4", tcp, banners), "Unknown")
 
 if __name__ == "__main__":

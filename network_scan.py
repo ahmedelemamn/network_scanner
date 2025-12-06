@@ -155,7 +155,7 @@ def ping(ip: str, timeout: float) -> bool:
 
 
 def get_banner(ip: str, port: int, sock: socket.socket, timeout: float) -> str:
-    """Attempt to retrieve a banner. Supports SSH, basic HTTP(S) titles."""
+    """Attempt to retrieve a banner. Supports SSH, basic HTTP(S) details."""
     try:
         sock.settimeout(timeout)
         
@@ -167,8 +167,9 @@ def get_banner(ip: str, port: int, sock: socket.socket, timeout: float) -> str:
             try:
                 # Peek or short recv
                 banner = sock.recv(1024).decode('utf-8', errors='ignore').strip()
-                if banner:
+                if banner and "SSH" in banner:
                     return banner
+                # If not SSH, we might still want to try HTTP if it looks like garbage or empty
             except socket.timeout:
                 pass
             except Exception:
@@ -200,7 +201,7 @@ def get_banner(ip: str, port: int, sock: socket.socket, timeout: float) -> str:
                     break
                 response += data
                 # Stop if we have <title> or enough data
-                if b"</title>" in response.lower() or len(response) > 10000:
+                if len(response) > 15000:
                     break
             except socket.timeout:
                 break
@@ -208,19 +209,36 @@ def get_banner(ip: str, port: int, sock: socket.socket, timeout: float) -> str:
                 break
                 
         decoded = response.decode('utf-8', errors='ignore')
-        
-        # Extract title
+        if not decoded:
+            return ""
+
+        # Parse interesting bits
         import re
-        title_match = re.search(r'<title>(.*?)</title>', decoded, re.IGNORECASE | re.DOTALL)
-        if title_match:
-            return f"HTTP Title: {title_match.group(1).strip()}"
+        parts = []
+        
+        # Status Line
+        status_match = re.match(r'HTTP/\d\.\d\s+(\d{3})', decoded)
+        if status_match:
+            parts.append(f"HTTP {status_match.group(1)}")
             
-        # Extract Server header
+        # Server
         server_match = re.search(r'Server: (.*?)\r\n', decoded, re.IGNORECASE)
         if server_match:
-            return f"Server: {server_match.group(1).strip()}"
+            parts.append(f"Server: {server_match.group(1).strip()}")
             
-        return ""
+        # Location (if redirect)
+        loc_match = re.search(r'Location: (.*?)\r\n', decoded, re.IGNORECASE)
+        if loc_match:
+            parts.append(f"Location: {loc_match.group(1).strip()}")
+
+        # Title
+        title_match = re.search(r'<title>(.*?)</title>', decoded, re.IGNORECASE | re.DOTALL)
+        if title_match:
+            # Clean up newlines/tabs in title
+            clean_title = " ".join(title_match.group(1).strip().split())
+            parts.append(f"Title: {clean_title}")
+            
+        return " | ".join(parts)
 
     except Exception as e:
         logging.debug("Banner grab failed for %s:%s: %s", ip, port, e)
@@ -262,47 +280,48 @@ def resolve_hostname(ip: str) -> str:
 def classify_device(ip: str, tcp_results: Dict[int, bool], banners: Dict[int, str]) -> str:
     """Classify device based on ports and banners."""
     
+    combined_banners = " ".join(banners.values()).lower()
+
     # 1. Nutanix Prism (9440)
     if tcp_results.get(9440):
         return "Nutanix Prism"
         
-    # 2. vCenter (5480 often open on appliance, or 443 with specific banner)
+    # 2. vCenter
+    # Check 5480 banner for "appliance" or redirect to port 5480
     if tcp_results.get(5480):
         banner_5480 = banners.get(5480, "").lower()
         if "appliance" in banner_5480 or "vcenter" in banner_5480: 
              return "VMware vCenter Appliance"
-        # If 5480 is just open, it's a strong indicator of vCenter VAMI
         return "VMware vCenter (Likely)"
+    
+    if "vsphere client" in combined_banners or "visphere client" in combined_banners:
+        return "VMware vCenter"
         
-    # Check 443/80 banners
-    http_banners = []
-    if tcp_results.get(443): http_banners.append(banners.get(443, "").lower())
-    if tcp_results.get(80): http_banners.append(banners.get(80, "").lower())
-    combined_http = " ".join(http_banners)
-
-    # 3. ESXi
-    if "esxi" in combined_http or "vmware esxi" in combined_http:
-        return "VMware ESXi"
-        
-    # vCenter via 443 check
-    if "vsphere client" in combined_http or "visphere client" in combined_http:
+    if "vcenter" in combined_banners:
         return "VMware vCenter"
 
+    # 3. ESXi
+    if "esxi" in combined_banners:
+        return "VMware ESXi"
+    if "vmware" in combined_banners and "id_esx" in combined_banners: # Check for common VMware cookies/headers
+        return "VMware ESXi"
+
     # 4. Cisco CIMC
-    if "cisco integrated management controller" in combined_http or "cimc" in combined_http:
+    if "cisco integrated management controller" in combined_banners or "cimc" in combined_banners:
         return "Cisco CIMC"
 
     # 5. Nexus Switch
-    # Check SSH banner
     ssh_banner = banners.get(22, "").lower()
     if "cisco" in ssh_banner or "nx-os" in ssh_banner or "nexus" in ssh_banner:
         return "Cisco Nexus/IOS"
         
     # Generic Fallbacks
-    if "vmware" in combined_http:
+    if "vmware" in combined_banners:
         return "VMware Device"
-    if "cisco" in combined_http:
+    if "cisco" in combined_banners:
         return "Cisco Device"
+    if "jetty" in combined_banners: # Often embedded devices
+        return "Embedded Device (Jetty)"
     
     return "Unknown"
 
