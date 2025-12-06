@@ -70,5 +70,42 @@ class TestNetworkScan(unittest.TestCase):
         self.assertFalse(is_open)
         self.assertEqual(banner, "")
 
+    def test_classify_nutanix(self):
+        tcp = {9440: True}
+        banners = {}
+        self.assertEqual(network_scan.classify_device("1.2.3.4", tcp, banners), "Nutanix Prism")
+
+    def test_classify_esxi(self):
+        tcp = {443: True, 80: True}
+        banners = {80: "VMware ESXi server", 443: "HTTP Title: VMware ESXi"}
+        self.assertEqual(network_scan.classify_device("1.2.3.4", tcp, banners), "VMware ESXi")
+    
+    def test_classify_vcenter(self):
+        tcp = {5480: True}
+        banners = {}
+        self.assertEqual(network_scan.classify_device("1.2.3.4", tcp, banners), "VMware vCenter (Likely)")
+        
+        tcp = {443: True}
+        banners = {443: "HTTP Title: vSphere Client"}
+        self.assertEqual(network_scan.classify_device("1.2.3.4", tcp, banners), "VMware vCenter")
+
+    def test_classify_cimc(self):
+        tcp = {443: True}
+        banners = {443: "HTTP Title: Cisco Integrated Management Controller"}
+        self.assertEqual(network_scan.classify_device("1.2.3.4", tcp, banners), "Cisco CIMC")
+
+    def test_classify_nexus(self):
+        tcp = {22: True}
+        banners = {22: "SSH-2.0-Cisco-1.25"}
+        self.assertEqual(network_scan.classify_device("1.2.3.4", tcp, banners), "Cisco Nexus/IOS")
+        
+        banners = {22: "SSH-2.0-NX-OS"}
+        self.assertEqual(network_scan.classify_device("1.2.3.4", tcp, banners), "Cisco Nexus/IOS")
+
+    def test_classify_unknown(self):
+        tcp = {80: True}
+        banners = {80: "Apache"}
+        self.assertEqual(network_scan.classify_device("1.2.3.4", tcp, banners), "Unknown")
+
 if __name__ == "__main__":
     unittest.main()

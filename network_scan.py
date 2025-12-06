@@ -6,11 +6,13 @@ import json
 import logging
 import platform
 import socket
+import ssl
 import subprocess
 import sys
 from typing import Iterable, List, Dict, Union, Optional, Tuple
 
-DEFAULT_PORTS = [22, 23, 80, 443, 9443]
+# Added 5480 (vCenter Appliance), 9440 (Nutanix Prism)
+DEFAULT_PORTS = [22, 23, 80, 443, 5480, 9440, 9443]
 
 
 def parse_ports(port_args: List[str]) -> List[int]:
@@ -49,7 +51,7 @@ def parse_args() -> argparse.Namespace:
         "--ports",
         nargs="+",
         default=[str(p) for p in DEFAULT_PORTS],
-        help="TCP ports to probe. Can be single ports (80) or ranges (80-100). Default: 22, 23, 80, 443, 9443",
+        help="TCP ports to probe. Can be single ports (80) or ranges (80-100). Default: " + ", ".join(map(str, DEFAULT_PORTS)),
     )
     parser.add_argument(
         "-o",
@@ -132,50 +134,13 @@ def ip_range(start_ip: Optional[str], end_ip: Optional[str], network: Optional[s
 
 
 def ping(ip: str, timeout: float) -> bool:
-<<<<<<< HEAD
-    """Ping an IP address with platform-aware flags.
-
-    Windows uses different flags and expects timeout in milliseconds, while
-    Linux/macOS use ``-c``/``-W`` with whole-second timeouts. This keeps the
-    interface consistent across platforms so ICMP results are reliable for
-    Windows users.
-    """
-
-    if platform.system().lower().startswith("win"):
-        # Windows: -n (count), -w (timeout in ms)
-        timeout_ms = max(int(timeout * 1000), 1)
-        cmd = ["ping", "-n", "1", "-w", str(timeout_ms), ip]
-    else:
-        # Unix-like: -c (count), -W (timeout in seconds)
-        cmd = ["ping", "-c", "1", "-W", str(int(max(timeout, 1))), ip]
-    logging.debug("Pinging %s with timeout %ss", ip, timeout)
-    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    reachable = proc.returncode == 0
-=======
     param = "-n" if platform.system().lower() == "windows" else "-c"
-    timeout_param = "-w" if platform.system().lower() == "windows" else "-W"
-    # Windows timeout is in milliseconds, Unix in seconds (usually)
-    # Actually, macOS ping -W is in milliseconds, Linux ping -W is in seconds.
-    # This is tricky. Let's assume standard Linux ping for Unix.
-    # Wait, macOS ping man page: -W waittime (in msec).
-    # Linux ping man page: -W timeout (in seconds).
-    # To be safe, we can use a generous timeout or try to detect OS flavor more granularly.
-    # Or just use a standard subprocess timeout.
-    
-    # Let's rely on subprocess.run timeout for the execution limit, 
-    # and pass a flag that works for "wait for reply".
     
     cmd = ["ping", param, "1", ip]
     
-    # Adjusting command for timeout is messy across platforms. 
-    # Let's just trust the subprocess timeout to kill it if it hangs, 
-    # but we need the ping command itself to fail fast if unreachable.
-    
     if platform.system().lower() != "windows":
-         # On Unix, -W 1 is usually 1 second.
          cmd.extend(["-W", str(int(max(timeout, 1)))])
     else:
-         # On Windows, -w 1000 is 1000ms.
          cmd.extend(["-w", str(int(timeout * 1000))])
 
     logging.debug("Pinging %s", ip)
@@ -185,25 +150,85 @@ def ping(ip: str, timeout: float) -> bool:
     except subprocess.TimeoutExpired:
         reachable = False
         
->>>>>>> 57e1436 (update)
     logging.debug("Ping %s: %s", ip, "reachable" if reachable else "unreachable")
     return reachable
 
 
-def get_banner(sock: socket.socket) -> str:
+def get_banner(ip: str, port: int, sock: socket.socket, timeout: float) -> str:
+    """Attempt to retrieve a banner. Supports SSH, basic HTTP(S) titles."""
     try:
-        # Send a dummy byte to trigger a response from some protocols
-        # sock.send(b'\r\n') 
-        # Actually, many services send a banner on connect (SSH, SMTP, FTP).
-        # HTTP needs a request.
-        # Let's just peek/recv.
-        banner = sock.recv(1024).decode('utf-8', errors='ignore').strip()
-        return banner
-    except Exception:
+        sock.settimeout(timeout)
+        
+        # Check if port is typically SSL/TLS
+        is_ssl = port in [443, 9443, 5480, 9440]
+        
+        # 1. Try raw recv first (for SSH, FTP, etc.)
+        if not is_ssl:
+            try:
+                # Peek or short recv
+                banner = sock.recv(1024).decode('utf-8', errors='ignore').strip()
+                if banner:
+                    return banner
+            except socket.timeout:
+                pass
+            except Exception:
+                pass
+
+        # 2. If it's HTTP/HTTPS or we got no banner, try sending a request
+        # Wrap socket if SSL
+        target_sock = sock
+        context = None
+        if is_ssl:
+            try:
+                context = ssl.create_default_context()
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+                target_sock = context.wrap_socket(sock, server_hostname=ip)
+            except Exception as e:
+                logging.debug("SSL wrap failed for %s:%s: %s", ip, port, e)
+                return ""
+
+        # Send HTTP GET
+        request = f"GET / HTTP/1.1\r\nHost: {ip}\r\nConnection: close\r\n\r\n"
+        target_sock.sendall(request.encode())
+        
+        response = b""
+        while True:
+            try:
+                data = target_sock.recv(4096)
+                if not data:
+                    break
+                response += data
+                # Stop if we have <title> or enough data
+                if b"</title>" in response.lower() or len(response) > 10000:
+                    break
+            except socket.timeout:
+                break
+            except Exception:
+                break
+                
+        decoded = response.decode('utf-8', errors='ignore')
+        
+        # Extract title
+        import re
+        title_match = re.search(r'<title>(.*?)</title>', decoded, re.IGNORECASE | re.DOTALL)
+        if title_match:
+            return f"HTTP Title: {title_match.group(1).strip()}"
+            
+        # Extract Server header
+        server_match = re.search(r'Server: (.*?)\r\n', decoded, re.IGNORECASE)
+        if server_match:
+            return f"Server: {server_match.group(1).strip()}"
+            
+        return ""
+
+    except Exception as e:
+        logging.debug("Banner grab failed for %s:%s: %s", ip, port, e)
         return ""
 
 
 def scan_port(ip: str, port: int, timeout: float) -> Tuple[bool, str]:
+    # Use simple socket for connection test first
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
         try:
@@ -213,11 +238,13 @@ def scan_port(ip: str, port: int, timeout: float) -> Tuple[bool, str]:
             # Try to grab banner
             banner = ""
             try:
-                # Set a short timeout for banner grabbing
-                sock.settimeout(0.5)
-                banner = get_banner(sock)
-            except:
-                pass
+                # We need to clone/re-use socket or just use the connected one. 
+                # get_banner might wrap it in SSL, so let's pass it.
+                # NOTE: Wrapping closes the original fd if we are not careful, 
+                # but we are in a with block.
+                banner = get_banner(ip, port, sock, 1.5) # slightly longer timeout for banner
+            except Exception as e:
+                logging.debug("Banner grab outer logic failed: %s", e)
                 
             return True, banner
         except (socket.timeout, ConnectionRefusedError, OSError):
@@ -230,6 +257,54 @@ def resolve_hostname(ip: str) -> str:
         return socket.gethostbyaddr(ip)[0]
     except socket.herror:
         return ""
+
+
+def classify_device(ip: str, tcp_results: Dict[int, bool], banners: Dict[int, str]) -> str:
+    """Classify device based on ports and banners."""
+    
+    # 1. Nutanix Prism (9440)
+    if tcp_results.get(9440):
+        return "Nutanix Prism"
+        
+    # 2. vCenter (5480 often open on appliance, or 443 with specific banner)
+    if tcp_results.get(5480):
+        banner_5480 = banners.get(5480, "").lower()
+        if "appliance" in banner_5480 or "vcenter" in banner_5480: 
+             return "VMware vCenter Appliance"
+        # If 5480 is just open, it's a strong indicator of vCenter VAMI
+        return "VMware vCenter (Likely)"
+        
+    # Check 443/80 banners
+    http_banners = []
+    if tcp_results.get(443): http_banners.append(banners.get(443, "").lower())
+    if tcp_results.get(80): http_banners.append(banners.get(80, "").lower())
+    combined_http = " ".join(http_banners)
+
+    # 3. ESXi
+    if "esxi" in combined_http or "vmware esxi" in combined_http:
+        return "VMware ESXi"
+        
+    # vCenter via 443 check
+    if "vsphere client" in combined_http or "visphere client" in combined_http:
+        return "VMware vCenter"
+
+    # 4. Cisco CIMC
+    if "cisco integrated management controller" in combined_http or "cimc" in combined_http:
+        return "Cisco CIMC"
+
+    # 5. Nexus Switch
+    # Check SSH banner
+    ssh_banner = banners.get(22, "").lower()
+    if "cisco" in ssh_banner or "nx-os" in ssh_banner or "nexus" in ssh_banner:
+        return "Cisco Nexus/IOS"
+        
+    # Generic Fallbacks
+    if "vmware" in combined_http:
+        return "VMware Device"
+    if "cisco" in combined_http:
+        return "Cisco Device"
+    
+    return "Unknown"
 
 
 def scan_host(ip: str, ports: List[int], timeout: float, resolve: bool) -> Dict[str, Union[str, bool, Dict]]:
@@ -254,10 +329,13 @@ def scan_host(ip: str, ports: List[int], timeout: float, resolve: bool) -> Dict[
         if is_open and banner:
             banners[port] = banner
 
+    device_type = classify_device(ip, tcp_results, banners)
+
     logging.info(
-        "Finished %s (%s) | ICMP: %s | Open Ports: %s",
+        "Finished %s (%s) [%s] | ICMP: %s | Open Ports: %s",
         ip,
         hostname if hostname else "N/A",
+        device_type,
         "reachable" if icmp_result else "no reply",
         ", ".join(str(p) for p, open in tcp_results.items() if open),
     )
@@ -265,6 +343,7 @@ def scan_host(ip: str, ports: List[int], timeout: float, resolve: bool) -> Dict[
     return {
         "ip": ip,
         "hostname": hostname,
+        "device_type": device_type,
         "icmp": icmp_result,
         "tcp": tcp_results,
         "banners": banners
@@ -273,8 +352,8 @@ def scan_host(ip: str, ports: List[int], timeout: float, resolve: bool) -> Dict[
 
 def write_results_csv(results: List[Dict], ports: List[int], output_file: str) -> None:
     # Flatten structure for CSV
-    # ip, hostname, icmp, tcp_22, banner_22, tcp_80, banner_80...
-    fieldnames = ["ip", "hostname", "icmp"]
+    # ip, hostname, device_type, icmp, tcp_22, banner_22, ...
+    fieldnames = ["ip", "hostname", "device_type", "icmp"]
     for p in ports:
         fieldnames.append(f"tcp_{p}")
         fieldnames.append(f"banner_{p}")
@@ -286,6 +365,7 @@ def write_results_csv(results: List[Dict], ports: List[int], output_file: str) -
             flat_row = {
                 "ip": row["ip"],
                 "hostname": row["hostname"],
+                "device_type": row["device_type"],
                 "icmp": row["icmp"],
             }
             for p in ports:
